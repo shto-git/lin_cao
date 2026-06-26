@@ -263,6 +263,25 @@ class Database:
         self._conn.commit()
         return cur.rowcount > 0
 
+    def update_document_ragflow_id(self, doc_id: str, ragflow_id: str) -> None:
+        self._execute(
+            "UPDATE documents SET ragflow_document_id = ? WHERE id = ?",
+            (ragflow_id, doc_id),
+        )
+        self._conn.commit()
+
+    def update_document_chunk_count(self, doc_id: str, chunk_count: int) -> None:
+        self._execute(
+            "UPDATE documents SET chunk_count = ?, parse_status = 'completed' WHERE id = ?",
+            (chunk_count, doc_id),
+        )
+        self._conn.commit()
+
+    def clear_section_tasks(self, project_id: str) -> None:
+        cur = self._execute("DELETE FROM section_tasks WHERE project_id = ?", (project_id,))
+        self._conn.commit()
+
+
     # ── Documents ─────────────────────────────────────────
 
     def save_document(

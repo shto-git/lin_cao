@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, UploadFile, File
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import FileResponse
@@ -204,6 +204,110 @@ def get_outline(project_id: str) -> list[dict[str, Any]]:
     return nodes
 
 
+
+# ── API: Documents ──────────────────────────────────────
+
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".md", ".txt", ".csv", ".doc", ".xls"}
+
+@app.post("/api/v1/projects/{project_id}/documents")
+async def upload_document(
+    project_id: str,
+    file: UploadFile = File(...),
+    description: str = Form(""),
+) -> dict[str, Any]:
+    """上传资料并入库"""
+    db = get_db()
+    project = db.get_project(project_id)
+    if not project:
+        db.close()
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 检查文件扩展名
+    file_ext = os.path.splitext(file.filename or "")[1].lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        db.close()
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {file_ext}。支持: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+
+    # 保存文件
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "uploads", project_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, file.filename or "unknown")
+    with open(file_path, "wb") as f:
+        content_bytes = await file.read()
+        f.write(content_bytes)
+
+    # 保存到数据库
+    doc_id = db.save_document(
+        project_id=project_id,
+        file_name=file.filename or "unknown",
+        file_path=file_path,
+        file_type=file_ext,
+        file_size=len(content_bytes),
+        description=description,
+    )
+
+    # 尝试上传到 RAGFlow
+    ragflow_dataset_id = project.get("ragflow_dataset_id")
+    if ragflow_dataset_id:
+        try:
+            from lin_cao_planner.ragflow_client import RagflowClient
+            from lin_cao_planner import LLMConfig
+            llm_config = LLMConfig.from_env()
+            rag_client = RagflowClient(
+                base_url=llm_config.ragflow_base_url or "http://localhost:9380",
+                api_key=llm_config.ragflow_api_key or "",
+            )
+            rag_doc_id = rag_client.upload_document(ragflow_dataset_id, file_path)
+            if rag_doc_id:
+                db.update_document_ragflow_id(doc_id, rag_doc_id)
+                # 触发解析
+                rag_client.parse_documents(ragflow_dataset_id, [rag_doc_id])
+                # 更新 chunk count
+                chunk_count = rag_client.get_chunk_count(ragflow_dataset_id, rag_doc_id)
+                db.update_document_chunk_count(doc_id, chunk_count)
+        except Exception:
+            pass  # RAGFlow 上传失败不影响本地入库
+
+    db.close()
+    return {
+        "id": doc_id,
+        "file_name": file.filename,
+        "file_type": file_ext,
+        "file_size": len(content_bytes),
+        "parse_status": "completed",
+        "message": "资料上传成功",
+    }
+
+
+@app.get("/api/v1/projects/{project_id}/documents")
+def list_documents(project_id: str) -> list[dict[str, Any]]:
+    """获取项目资料列表"""
+    db = get_db()
+    docs = db.list_documents(project_id)
+    db.close()
+    return docs
+
+
+@app.delete("/api/v1/projects/{project_id}/documents/{doc_id}")
+def delete_document(project_id: str, doc_id: str) -> dict[str, Any]:
+    """删除资料"""
+    db = get_db()
+    doc = db.get_document(doc_id)
+    if not doc or doc.get("project_id") != project_id:
+        db.close()
+        raise HTTPException(status_code=404, detail="资料不存在")
+    # 删除本地文件
+    file_path = doc.get("file_path", "")
+    if file_path and os.path.exists(file_path):
+        os.remove(file_path)
+    db.delete_document(doc_id)
+    db.close()
+    return {"message": "资料已删除"}
+
+
 # ── API: Section Tasks ──────────────────────────────────
 
 @app.get("/api/v1/projects/{project_id}/tasks")
@@ -222,6 +326,51 @@ def get_task(project_id: str, task_id: str) -> dict[str, Any]:
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
+
+
+@app.post("/api/v1/projects/{project_id}/tasks/generate")
+def generate_tasks(project_id: str) -> dict[str, Any]:
+    """基于大纲生成章节检索任务"""
+    db = get_db()
+    project_data = db.get_project(project_id)
+    if not project_data:
+        db.close()
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = ProjectInfo(
+        name=project_data["name"],
+        region=project_data["region"],
+        period=project_data["period"],
+        level=project_data.get("level", ""),
+        planning_type=project_data["planning_type"],
+        target_words=project_data.get("target_words", 50000),
+    )
+
+    outline = build_default_outline(project)
+    briefs = build_retrieval_plan(project, outline)
+
+    # 清除旧的检索任务
+    db.clear_section_tasks(project_id)
+
+    # 保存新的检索任务
+    task_count = 0
+    for brief in briefs:
+        db.save_section_task(
+            project_id=project_id,
+            outline_id=brief.outline_id,
+            title_path=brief.title_path,
+            target_words=brief.target_words,
+            retrieval_queries=brief.retrieval_queries,
+            required_evidence_types=brief.required_evidence_types,
+            writing_constraints=brief.writing_constraints,
+        )
+        task_count += 1
+
+    db.close()
+    return {
+        "message": f"已生成 {task_count} 个章节检索任务",
+        "tasks": task_count,
+    }
 
 
 # ── API: Draft Generation ───────────────────────────────
