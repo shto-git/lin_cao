@@ -331,6 +331,182 @@ def _build_simulated_draft(
     return "\n".join(lines)
 
 
+# ── Draft Modification Functions (Phase 2) ──────────────
+
+EXPAND_SYSTEM_PROMPT = """你是一位资深林草规划编制专家。你的任务是基于已有的草稿内容进行扩写。
+
+## 扩写原则
+1. 保留现有草稿的核心内容和结构
+2. 根据目标字数，补充更多细节、数据、案例
+3. 补充的内容必须基于提供的参考资料
+4. 不编造数据，缺少依据时标注"待补充"
+5. 保持与现有内容的风格一致
+6. 新增内容标注来源 [来源: 文件名]
+"""
+
+COMPRESS_SYSTEM_PROMPT = """你是一位资深林草规划编制专家。你的任务是基于已有的草稿内容进行压缩。
+
+## 压缩原则
+1. 保留核心观点、关键数据和重要政策
+2. 删除重复表述、冗余过渡句
+3. 保持逻辑结构完整
+4. 数据精度不降低
+5. 压缩后内容应独立可读
+"""
+
+REWRITE_SYSTEM_PROMPT = """你是一位资深林草规划编制专家。你的任务根据用户的修改指令重写草稿。
+
+## 改写原则
+1. 理解用户的修改意图
+2. 保留草稿中不需要修改的部分
+3. 对需要修改的部分按指令进行调整
+4. 改写后内容连贯、完整
+5. 保持专业规范
+"""
+
+
+def expand_draft(
+    draft_content: str,
+    target_words: int,
+    evidence_chunks: list[EvidenceChunk],
+    llm_client: LLMClient | None = None,
+) -> GenerationResult:
+    """基于现有草稿进行扩写，增加字数到 target_words。"""
+    warnings: list[str] = []
+    evidence_text = "\n\n".join(chunk.format_for_prompt() for chunk in evidence_chunks)
+    if not evidence_text:
+        evidence_text = "（暂无检索到的参考资料）"
+
+    user_prompt = f"""请对以下草稿进行扩写，目标字数 {target_words} 字。
+
+## 当前草稿（{len(draft_content)} 字）
+
+{draft_content}
+
+## 参考资料
+
+{evidence_text}
+
+## 扩写要求
+1. 保留现有核心内容
+2. 补充细节、案例、数据
+3. 不编造，缺依据时标注"待补充"
+4. 新增内容标注来源
+
+请输出扩写后的完整内容："""
+
+    client = llm_client or LLMClient()
+    if client.config.api_key:
+        try:
+            content = client.complete(EXPAND_SYSTEM_PROMPT, user_prompt, temperature=0.3, max_tokens=min(target_words * 2, 8000))
+        except RuntimeError as exc:
+            warnings.append(f"扩写失败: {exc}")
+            content = draft_content
+    else:
+        warnings.append("未配置 LLM API Key，返回原草稿")
+        content = draft_content
+
+    return GenerationResult(
+        outline_id="expand",
+        title="扩写结果",
+        content=content,
+        word_count=len(content),
+        status="draft",
+        warnings=warnings,
+    )
+
+
+def compress_draft(
+    draft_content: str,
+    target_words: int,
+    llm_client: LLMClient | None = None,
+) -> GenerationResult:
+    """压缩草稿，减少字数到 target_words。"""
+    warnings: list[str] = []
+
+    user_prompt = f"""请对以下草稿进行压缩，目标字数 {target_words} 字。
+
+## 当前草稿（{len(draft_content)} 字）
+
+{draft_content}
+
+## 压缩要求
+1. 保留核心观点、关键数据
+2. 删除冗余表述
+3. 保持逻辑完整
+4. 数据精度不降低
+
+请输出压缩后的完整内容："""
+
+    client = llm_client or LLMClient()
+    if client.config.api_key:
+        try:
+            content = client.complete(COMPRESS_SYSTEM_PROMPT, user_prompt, temperature=0.3, max_tokens=min(target_words * 2, 8000))
+        except RuntimeError as exc:
+            warnings.append(f"压缩失败: {exc}")
+            content = draft_content
+    else:
+        warnings.append("未配置 LLM API Key，返回原草稿")
+        content = draft_content
+
+    return GenerationResult(
+        outline_id="compress",
+        title="压缩结果",
+        content=content,
+        word_count=len(content),
+        status="draft",
+        warnings=warnings,
+    )
+
+
+def rewrite_draft(
+    draft_content: str,
+    instruction: str,
+    llm_client: LLMClient | None = None,
+) -> GenerationResult:
+    """根据用户指令重写草稿。"""
+    warnings: list[str] = []
+
+    user_prompt = f"""请根据以下修改指令重写草稿。
+
+## 当前草稿
+
+{draft_content}
+
+## 修改指令
+
+{instruction}
+
+## 要求
+1. 按指令修改相应内容
+2. 未涉及的部分保持原样
+3. 保持专业规范和风格一致
+
+请输出重写后的完整内容："""
+
+    client = llm_client or LLMClient()
+    if client.config.api_key:
+        try:
+            content = client.complete(REWRITE_SYSTEM_PROMPT, user_prompt, temperature=0.3, max_tokens=8000)
+        except RuntimeError as exc:
+            warnings.append(f"改写失败: {exc}")
+            content = draft_content
+    else:
+        warnings.append("未配置 LLM API Key，返回原草稿")
+        content = draft_content
+
+    return GenerationResult(
+        outline_id="rewrite",
+        title="改写结果",
+        content=content,
+        word_count=len(content),
+        status="draft",
+        warnings=warnings,
+    )
+
+
+
+
 def _build_placeholder_draft(
     title_path: str,
     evidence_chunks: list[EvidenceChunk],

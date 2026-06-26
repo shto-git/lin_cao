@@ -368,9 +368,15 @@ async function loadDrafts() {
                     <h3>${d.title || d.outline_id}</h3>
                     <span class="word-count">${d.content?.length || 0}字</span>
                 </div>
-                <details>
-                    <summary>查看内容</summary>
-                    <div class="draft-content">${d.content || '(空)'}</div>
+                <details open>
+                    <summary>查看/编辑内容</summary>
+                    <div class="draft-editor" data-outline="${d.outline_id}">
+                        <textarea class="tinymce-editor" id="editor-${d.outline_id}">${(d.content || '(空)').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                        <div class="editor-actions">
+                            <button class="btn btn-sm btn-primary" onclick="saveDraft('${d.outline_id}')">保存</button>
+                            <span class="save-status" id="status-${d.outline_id}"></span>
+                        </div>
+                    </div>
                 </details>
             </div>`;
         });
@@ -499,3 +505,58 @@ document.addEventListener('DOMContentLoaded', () => {
         actionsBar.appendChild(exportBtn);
     }
 });
+
+
+// ── TinyMCE Rich Text Editor (S4) ──────────────────────
+
+function initTinyMCE() {
+    document.querySelectorAll('.tinymce-editor').forEach(textarea => {
+        if (textarea.dataset.initialized) return;
+        textarea.dataset.initialized = 'true';
+        
+        tinymce.init({
+            target: textarea,
+            language: 'zh_CN',
+            plugins: 'lists link table code wordcount',
+            toolbar: 'undo redo | formatselect | bold italic | alignleft aligncenter alignright | bullist numlist | table | link | code',
+            menubar: false,
+            height: 400,
+            setup: function(editor) {
+                editor.on('change', function() {
+                    editor.save(); // 同步到 textarea
+                }
+            }
+        });
+    });
+}
+
+async function saveDraft(outlineId) {
+    const statusEl = document.getElementById('status-' + outlineId);
+    statusEl.textContent = '保存中...';
+    
+    const editor = tinymce.get('editor-' + outlineId);
+    const content = editor ? editor.getContent() : document.getElementById('editor-' + outlineId).value;
+    
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/drafts/${outlineId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: content })
+        });
+        if (!res.ok) throw new Error('保存失败');
+        const result = await res.json();
+        statusEl.textContent = `✓ 已保存 (${result.word_count}字)`;
+        statusEl.style.color = '#059669';
+    } catch(e) {
+        statusEl.textContent = '✗ 保存失败: ' + e.message;
+        statusEl.style.color = '#dc2626';
+    }
+}
+
+// 在 loadDrafts 完成后初始化 TinyMCE
+const originalLoadDrafts = loadDrafts;
+loadDrafts = async function() {
+    await originalLoadDrafts();
+    // 延迟初始化 TinyMCE（确保 DOM 已更新）
+    setTimeout(initTinyMCE, 100);
+};

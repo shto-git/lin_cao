@@ -666,6 +666,40 @@ def run_full_pipeline(project_id: str) -> dict[str, Any]:
     }
 
 
+# ── API: Draft Save (S4) ────────────────────────────────
+
+@app.put("/api/v1/projects/{project_id}/drafts/{outline_id}")
+@app.put("/api/v1/projects/{project_id}/drafts/{outline_id}")
+async def save_draft_endpoint(
+    project_id: str,
+    outline_id: str,
+    body: dict = None,
+) -> dict[str, Any]:
+    """保存编辑后的草稿内容（支持 HTML from TinyMCE）"""
+    if body is None:
+        try:
+            from starlette.requests import Request
+            body = {}
+        except:
+            body = {}
+    
+    content_text = body.get("content", "")
+    import re as _re
+    plain_text = _re.sub(r'<[^>]+>', '', content_text)
+    word_count = len(plain_text)
+    
+    db = get_db()
+    drafts = db.list_chapter_drafts(project_id)
+    existing = next((d for d in drafts if d["outline_id"] == outline_id), None)
+    if not existing:
+        db.close()
+        raise HTTPException(status_code=404, detail="草稿不存在")
+    
+    db.update_chapter_draft(existing["id"], content_text)
+    db.close()
+    return {"success": True, "outline_id": outline_id, "word_count": word_count}
+
+
 # ── API: WebSocket ──────────────────────────────────────
 
 @app.websocket("/ws/progress/{project_id}")

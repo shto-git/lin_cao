@@ -169,3 +169,95 @@ def _validate_figure_references(drafts: list[ChapterDraft]) -> list[QualityFindi
                     )
                     break  # One finding per chapter for this check
     return findings
+
+
+# ── Metric Consistency Check (Phase 2 S3) ────────────────
+
+import re as _re
+from dataclasses import dataclass
+
+@dataclass
+class MetricEntry:
+    """A metric value found in a chapter."""
+    metric: str
+    value: str
+    unit: str
+    chapter: str
+    outline_id: str
+
+# 扩展的指标匹配模式（中文 + 数字 + 单位）
+METRIC_EXTRACTION_PATTERNS = [
+    # 森林覆盖率 65.5%
+    (r'(森林覆盖率)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(%)', '森林覆盖率', '%'),
+    # 草原综合植被盖度 58%
+    (r'(草原综合植被盖度)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(%)', '草原综合植被盖度', '%'),
+    # 湿地保护率 45%
+    (r'(湿地保护率)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(%)', '湿地保护率', '%'),
+    # 造林面积 10000公顷
+    (r'(造林面积|森林面积|林地面积)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(公顷|万亩|平方公里)', None, None),
+    # 投资额 5000万元
+    (r'(投资|投资估算|总投资)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(万元|亿元)', None, None),
+    # 木材产量 10000立方米
+    (r'(木材产量|木材蓄积)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(立方米|万立方米)', None, None),
+    # 通用：XX指标 数字 单位
+    (r'(覆盖率|保护率|绿化率|植被盖度|森林蓄积|沙化土地)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(%|公顷|万亩|亿元|万元|立方米)', None, None),
+]
+
+
+def build_metric_index(drafts: list[ChapterDraft]) -> list[MetricEntry]:
+    """扫描所有章节，提取指标名+数值+单位，返回指标索引列表。"""
+    entries: list[MetricEntry] = []
+    for draft in drafts:
+        for pattern, name_override, unit_override in METRIC_EXTRACTION_PATTERNS:
+            for match in pattern.finditer(draft.content):
+                groups = match.groups()
+                if name_override:
+                    metric_name = name_override
+                    value = groups[1] if len(groups) > 1 else ""
+                    unit = unit_override or ""
+                else:
+                    metric_name = groups[0] if groups[0] else match.group(1)
+                    value = groups[1] if len(groups) > 1 else ""
+                    unit = groups[2] if len(groups) > 2 else ""
+                
+                entries.append(MetricEntry(
+                    metric=metric_name,
+                    value=value,
+                    unit=unit,
+                    chapter=draft.title or draft.outline_id,
+                    outline_id=draft.outline_id,
+                ))
+    return entries
+
+
+def check_metric_consistency(drafts: list[ChapterDraft]) -> list[QualityFinding]:
+    """检查同一指标在不同章节的数值一致性。"""
+    entries = build_metric_index(drafts)
+    findings: list[QualityFinding] = []
+
+    # 按指标名分组
+    metric_groups: dict[str, list[MetricEntry]] = {}
+    for entry in entries:
+        key = f"{entry.metric}({entry.unit})" if entry.unit else entry.metric
+        if key not in metric_groups:
+            metric_groups[key] = []
+        metric_groups[key].append(entry)
+
+    # 检查冲突
+    for key, group in metric_groups.items():
+        if len(group) < 2:
+            continue
+        values = [e.value for e in group]
+        unique_values = set(values)
+        if len(unique_values) > 1:
+            locations = ", ".join(f"{e.chapter}={e.value}{e.unit}" for e in group)
+            findings.append(QualityFinding(
+                severity="error",
+                code="metric_conflict",
+                message=f"{key} 出现多个数值：{locations}",
+                location="full_document",
+                suggestion="确认是否为不同年份或不同范围；若不是，应统一指标口径。",
+            ))
+
+    return findings
+
