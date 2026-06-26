@@ -5,6 +5,73 @@ const API_BASE = window.location.origin;
 // ── 状态 ──
 let currentProjectId = null;
 let currentPage = 'projects';
+let wsConnection = null;
+
+// ── WebSocket 连接 ──
+function connectWebSocket(projectId) {
+    if (wsConnection) { wsConnection.close(); }
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/progress/${projectId}`;
+    wsConnection = new WebSocket(wsUrl);
+    wsConnection.onopen = () => console.log('WebSocket 已连接');
+    wsConnection.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        handleWSMessage(msg);
+    };
+    wsConnection.onclose = () => console.log('WebSocket 已断开');
+    wsConnection.onerror = (err) => console.error('WebSocket 错误:', err);
+}
+
+function handleWSMessage(msg) {
+    switch(msg.type) {
+        case 'connected':
+            console.log('WebSocket 连接确认:', msg.project_id);
+            break;
+        case 'task_start':
+            showProgress(msg.chapter, 0, msg.message || '开始...');
+            break;
+        case 'task_progress':
+            updateProgress(msg.percent, msg.message);
+            break;
+        case 'task_complete':
+            hideProgress();
+            showToast(`${msg.chapter || '任务'} 完成，字数: ${msg.result?.word_count || 0}`, 'success');
+            loadDrafts();
+            break;
+        case 'task_error':
+            hideProgress();
+            showToast(`错误: ${msg.error}`, 'error');
+            break;
+    }
+}
+
+// ── 进度条 ──
+function showProgress(chapter, percent, message) {
+    let bar = document.getElementById('progress-bar');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'progress-bar';
+        bar.className = 'progress-bar';
+        bar.innerHTML = `<div class="progress-fill" style="width:0%"></div><div class="progress-text"></div>`;
+        document.getElementById('tab-content').prepend(bar);
+    }
+    bar.style.display = 'block';
+    bar.querySelector('.progress-fill').style.width = percent + '%';
+    bar.querySelector('.progress-text').textContent = `${chapter}: ${message || percent + '%'}`;
+}
+
+function updateProgress(percent, message) {
+    const bar = document.getElementById('progress-bar');
+    if (bar) {
+        bar.querySelector('.progress-fill').style.width = percent + '%';
+        bar.querySelector('.progress-text').textContent = message || percent + '%';
+    }
+}
+
+function hideProgress() {
+    const bar = document.getElementById('progress-bar');
+    if (bar) setTimeout(() => bar.style.display = 'none', 2000);
+}
 
 // ── 页面路由 ──
 function showPage(page) {
@@ -12,77 +79,65 @@ function showPage(page) {
     document.getElementById('page-' + page).classList.add('active');
     document.querySelectorAll('.nav-links a').forEach(a => a.classList.toggle('active', a.dataset.page === page));
     currentPage = page;
-
     if (page === 'projects') loadProjects();
-    if (page === 'project' && currentProjectId) loadProjectDetail();
 }
-
-document.querySelectorAll('.nav-links a').forEach(a => {
-    a.addEventListener('click', e => { e.preventDefault(); showPage(a.dataset.page); });
-});
-
-// ── 标签页切换 ──
-document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        renderTabContent(tab.dataset.tab);
-    });
-});
 
 // ── Toast 通知 ──
-function toast(msg, type = 'info') {
+function showToast(message, type = 'info') {
     const container = document.getElementById('toast-container');
-    const el = document.createElement('div');
-    el.className = 'toast ' + type;
-    el.textContent = msg;
-    container.appendChild(el);
-    setTimeout(() => el.remove(), 3000);
-}
-
-// ── API 调用 ──
-async function api(path, opts = {}) {
-    const url = API_BASE + path;
-    const defaultOpts = { headers: { 'Content-Type': 'application/json' } };
-    const resp = await fetch(url, { ...defaultOpts, ...opts });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-    return data;
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
 }
 
 // ── 项目列表 ──
 async function loadProjects() {
     try {
-        const projects = await api('/api/v1/projects');
-        window._projects = projects;
-        const container = document.getElementById('project-list');
-        if (!projects.length) {
-            container.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:#999;padding:40px;">暂无项目，点击上方按钮新建</p>';
+        const res = await fetch(`${API_BASE}/api/v1/projects`);
+        const projects = await res.json();
+        const list = document.getElementById('project-list');
+        if (projects.length === 0) {
+            list.innerHTML = '<div class="empty-state"><p>暂无项目，点击"新建项目"开始</p></div>';
             return;
         }
-        container.innerHTML = projects.map(p => `
-            <div class="card">
-                <h3>${escapeHtml(p.name)}</h3>
-                <p>📍 ${escapeHtml(p.region)} | 📅 ${escapeHtml(p.period)}</p>
-                <p>📝 ${escapeHtml(p.planning_type)}</p>
-                <div class="card-actions">
-                    <button class="btn btn-primary" onclick="openProject('${p.id}')">进入</button>
-                    <button class="btn" onclick="deleteProject('${p.id}')">删除</button>
-                </div>
+        list.innerHTML = projects.map(p => `
+            <div class="card" onclick="openProject('${p.id}')">
+                <h3>${p.name}</h3>
+                <p class="meta">${p.region} · ${p.period} · ${p.planning_type}</p>
+                <p class="meta">目标: ${p.target_words?.toLocaleString() || 0} 字</p>
+                <span class="badge badge-${p.status === 'active' ? 'success' : 'default'}">${p.status}</span>
             </div>
         `).join('');
-    } catch (e) {
-        document.getElementById('project-list').innerHTML = '<p style="color:#999">无法连接后端服务，请确认服务已启动</p>';
+    } catch(e) {
+        showToast('加载项目列表失败', 'error');
     }
 }
 
-// ── 创建项目弹窗 ──
+async function openProject(id) {
+    currentProjectId = id;
+    connectWebSocket(id);
+    showPage('project');
+    await loadProjectDetail();
+    await loadOutline();
+}
+
+async function loadProjectDetail() {
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}`);
+        const project = await res.json();
+        document.getElementById('project-title').textContent = project.name;
+    } catch(e) { console.error('加载项目详情失败', e); }
+}
+
+// ── 创建项目 ──
 function showCreateProject() {
     document.getElementById('modal-overlay').classList.add('active');
 }
 
 function closeModal(e) {
-    if (!e || e.target === document.getElementById('modal-overlay')) {
+    if (!e || e.target === document.getElementById('modal-overlay') || e.target.closest('.modal') === null) {
         document.getElementById('modal-overlay').classList.remove('active');
     }
 }
@@ -90,151 +145,357 @@ function closeModal(e) {
 async function createProject(e) {
     e.preventDefault();
     const form = e.target;
-    const data = Object.fromEntries(new FormData(form).entries());
+    const data = Object.fromEntries(new FormData(form));
     data.target_words = parseInt(data.target_words) || 50000;
     try {
-        await api('/api/v1/projects', { method: 'POST', body: JSON.stringify(data) });
-        toast('项目创建成功', 'success');
+        const res = await fetch(`${API_BASE}/api/v1/projects`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (!res.ok) throw new Error('创建失败');
         closeModal();
-        form.reset();
+        showToast('项目创建成功', 'success');
         loadProjects();
-    } catch (e) { showToastError(e); }
-}
-
-// ── 大纲 ──
-async function generateOutline() {
-    try {
-        toast('正在生成大纲...');
-        const result = await api(`/api/v1/projects/${currentProjectId}/outline/generate`, { method: 'POST' });
-        toast(result.message, 'success');
-        renderTabContent('outline');
-    } catch (e) { showToastError(e); }
-}
-
-async function loadTasks() {
-    try {
-        return await api(`/api/v1/projects/${currentProjectId}/tasks`);
-    } catch (e) { showToastError(e); return []; }
-}
-
-async function generateDrafts() {
-    try {
-        toast('正在生成草稿...');
-        const result = await api(`/api/v1/projects/${currentProjectId}/generate?skip_llm=true`, { method: 'POST' });
-        toast(result.message, 'success');
-        renderTabContent('drafts');
-    } catch (e) { showToastError(e); }
-}
-
-async function runQualityCheck() {
-    try {
-        toast('正在质检...');
-        await api(`/api/v1/projects/${currentProjectId}/quality-check`, { method: 'POST' });
-        toast('质检完成', 'success');
-        renderTabContent('quality');
-    } catch (e) { showToastError(e); }
-}
-
-async function runFullPipeline() {
-    try {
-        toast('正在执行完整流程...');
-        const result = await api(`/api/v1/projects/${currentProjectId}/run-full`, { method: 'POST' });
-        toast(`完成！生成 ${result.drafts} 个草稿，发现 ${result.findings} 个问题`, 'success');
-        renderTabContent('outline');
-    } catch (e) { showToastError(e); }
-}
-
-function showToastError(e) {
-    toast(e.message || '操作失败', 'error');
-}
-
-// ── 标签内容渲染 ──
-async function renderTabContent(tab) {
-    const container = document.getElementById('tab-content');
-    if (tab === 'outline') {
-        try {
-            const nodes = await api(`/api/v1/projects/${currentProjectId}/outline`);
-            if (!nodes.length) { container.innerHTML = '<p style="color:#999">尚未生成大纲</p>'; return; }
-            container.innerHTML = '<div class="outline-tree">' + renderOutlineTree(nodes) + '</div>';
-        } catch (e) { showToastError(e); }
-    } else if (tab === 'tasks') {
-        try {
-            const tasks = await api(`/api/v1/projects/${currentProjectId}/tasks`);
-            if (!tasks.length) { container.innerHTML = '<p style="color:#999">尚未生成任务</p>'; return; }
-            container.innerHTML = tasks.map(t => `
-                <div class="task-item">
-                    <div class="task-header">
-                        <span class="task-title">${escapeHtml(t.outline_id)} - ${escapeHtml(escapeJsonArr(t.title_path))}</span>
-                        <span class="task-status status-${t.status}">${t.status}</span>
-                    </div>
-                    <p style="font-size:12px;color:#666;">字数: ${t.target_words} | 检索: ${escapeJsonArr(t.retrieval_queries).substring(0, 80)}</p>
-                </div>
-            `).join('');
-        } catch (e) { showToastError(e); }
-    } else if (tab === 'drafts') {
-        try {
-            const drafts = await api(`/api/v1/projects/${currentProjectId}/drafts`);
-            if (!drafts.length) { container.innerHTML = '<p style="color:#999">尚未生成草稿</p>'; return; }
-            const options = drafts.map(d => `<option value="${d.outline_id}">${escapeHtml(d.outline_id + ' - ' + d.title)}</option>`).join('');
-            container.innerHTML = `
-                <select onchange="renderDraft(this.value)" style="margin-bottom:16px;padding:8px;border-radius:8px;border:1px solid #ddd;">
-                    <option value="">选择章节...</option>${options}</select>
-                <div id="draft-view"></div>`;
-            if (drafts[0]) renderDraft(drafts[0].outline_id);
-        } catch (e) { showToastError(e); }
-    } else if (tab === 'quality') {
-        try {
-            const result = await api(`/api/v1/projects/${currentProjectId}/quality-check`, { method: 'POST' });
-            const summary = `<div class="quality-summary">
-                <div class="quality-stat total"><div class="number">${result.total}</div><div class="label">总计</div></div>
-                <div class="quality-stat errors"><div class="number">${result.errors}</div><div class="label">错误</div></div>
-                <div class="quality-stat warnings"><div class="number">${result.warnings}</div><div class="label">警告</div></div>
-            </div>`;
-            const findings = result.findings.map(f => `
-                <div class="finding-item ${f.severity}">
-                    <div class="finding-code">[${f.severity}] ${f.code}</div>
-                    <div>位置: ${f.location || '全文'}</div>
-                    <div class="finding-msg">${escapeHtml(f.message)}</div>
-                    <div style="font-size:12px;color:#888;margin-top:4px;">${escapeHtml(f.suggestion)}</div>
-                </div>
-            `).join('') || '<p style="color:#4CAF50;">✅ 未发现问题</p>';
-            container.innerHTML = summary + findings;
-        } catch (e) { showToastError(e); }
+    } catch(e) {
+        showToast('创建项目失败: ' + e.message, 'error');
     }
 }
 
-function escapeJsonArr(s) { try { return JSON.parse(s).join(' / '); } catch { return s; } }
+// ── Tab 切换 ──
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const tabName = tab.dataset.tab;
+        if (tabName === 'documents') loadDocuments();
+        else if (tabName === 'outline') loadOutline();
+        else if (tabName === 'tasks') loadTasks();
+        else if (tabName === 'drafts') loadDrafts();
+        else if (tabName === 'quality') loadQualityReport();
+    });
+});
 
-async function renderDraft(outlineId) {
+// ── 资料管理 ──
+async function loadDocuments() {
+    if (!currentProjectId) return;
     try {
-        const drafts = await api(`/api/v1/projects/${currentProjectId}/drafts`);
-        const draft = drafts.find(d => d.outline_id === outlineId);
-        document.getElementById('draft-view').innerHTML = draft
-            ? `<div class="draft-content">${escapeHtml(draft.content)}</div>` : '';
-    } catch (e) { showToastError(e); }
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/documents`);
+        const docs = await res.json();
+        const content = document.getElementById('tab-content');
+        
+        // 上传区域
+        let html = `<div class="upload-area" id="upload-area">
+            <h3>📤 上传资料</h3>
+            <p>支持 PDF、Word、Excel、Markdown、TXT 格式</p>
+            <input type="file" id="file-input" accept=".pdf,.docx,.doc,.xlsx,.xls,.md,.txt,.csv" style="margin:10px 0">
+            <button class="btn btn-primary" onclick="uploadFile()">上传</button>
+            <div id="upload-status" style="margin-top:10px"></div>
+        </div>`;
+        
+        if (!docs.length) {
+            html += '<div class="empty-state"><p>暂无资料，请上传相关文件</p></div>';
+        } else {
+            html += '<div class="doc-list">';
+            docs.forEach(d => {
+                html += `<div class="doc-card">
+                    <div class="doc-info">
+                        <strong>${d.file_name}</strong>
+                        <span class="meta">${d.file_type} · ${d.file_size ? (d.file_size/1024).toFixed(1)+'KB' : ''}</span>
+                        <span class="badge badge-${d.parse_status === 'completed' ? 'success' : 'default'}">${d.parse_status}</span>
+                        ${d.chunk_count ? `<span class="meta">分块: ${d.chunk_count}</span>` : ''}
+                    </div>
+                    <button class="btn btn-sm btn-danger" onclick="deleteDocument('${d.id}')">删除</button>
+                </div>`;
+            });
+            html += '</div>';
+        }
+        content.innerHTML = html;
+    } catch(e) {
+        document.getElementById('tab-content').innerHTML = '<p class="error">加载资料失败</p>';
+    }
 }
 
-function renderOutlineTree(nodes) {
-    const topLevel = nodes.filter(n => n.level <= 1);
-    return topLevel.map(n => {
-        const children = nodes.filter(x => x.parent_id === n.id && x.level === 2);
-        let html = `<div class="outline-node"><div class="outline-node-content level-${n.level}">${escapeHtml(n.title)}<span class="outline-words">${n.target_words || ''} 字</span></div>`;
-        children.forEach(c => {
-            html += `<div class="outline-node"><div class="outline-node-content level-2">${escapeHtml(c.title)}<span class="outline-words">${c.target_words || ''} 字</span></div></div>`;
+async function uploadFile() {
+    const input = document.getElementById('file-input');
+    const status = document.getElementById('upload-status');
+    if (!input.files.length) { showToast('请选择文件', 'warning'); return; }
+    const formData = new FormData();
+    formData.append('file', input.files[0]);
+    status.textContent = '上传中...';
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/documents`, {
+            method: 'POST',
+            body: formData
+        });
+        if (!res.ok) throw new Error('上传失败');
+        const result = await res.json();
+        showToast('上传成功', 'success');
+        loadDocuments();
+    } catch(e) {
+        status.textContent = '上传失败: ' + e.message;
+    }
+}
+
+async function deleteDocument(docId) {
+    if (!confirm('确定删除该资料？')) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/documents/${docId}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('删除失败');
+        showToast('已删除', 'success');
+        loadDocuments();
+    } catch(e) {
+        showToast('删除失败: ' + e.message, 'error');
+    }
+}
+
+// ── 大纲 ──
+async function loadOutline() {
+    if (!currentProjectId) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/outline`);
+        const nodes = await res.json();
+        const content = document.getElementById('tab-content');
+        if (!nodes.length) {
+            content.innerHTML = '<div class="empty-state"><p>暂无大纲，点击"生成大纲"开始</p></div>';
+            return;
+        }
+        let html = '<div class="outline-tree">';
+        const chapters = nodes.filter(n => n.level === 1);
+        chapters.forEach(ch => {
+            html += `<div class="outline-chapter">
+                <h3>${ch.title} <span class="word-count">(${ch.target_words}字)</span></h3>
+                <ul class="outline-sections">`;
+            const sections = nodes.filter(n => n.level === 2 && n.parent_id === ch.id);
+            sections.forEach(sec => {
+                html += `<li>${sec.title} <span class="word-count">(${sec.target_words}字)</span>
+                    <div class="evidence-types">依据: ${sec.required_evidence_types?.join(', ') || '不限'}</div>
+                </li>`;
+            });
+            html += '</ul></div>';
         });
         html += '</div>';
-        return html;
-    }).join('');
+        content.innerHTML = html;
+    } catch(e) {
+        document.getElementById('tab-content').innerHTML = '<p class="error">加载大纲失败</p>';
+    }
 }
 
-// ── 工具函数 ──
-function escapeHtml(s) {
-    const d = document.createElement('d');
-    d.textContent = s;
-    return d.innerHTML;
+async function generateOutline() {
+    if (!currentProjectId) return;
+    showToast('正在生成大纲...');
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/outline/generate`, { method: 'POST' });
+        if (!res.ok) throw new Error('生成失败');
+        const result = await res.json();
+        showToast(result.message, 'success');
+        // 自动生成检索任务
+        await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/tasks/generate`, { method: 'POST' });
+        loadOutline();
+    } catch(e) {
+        showToast('生成大纲失败: ' + e.message, 'error');
+    }
+}
+
+// ── 任务 ──
+async function loadTasks() {
+    if (!currentProjectId) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/tasks`);
+        const tasks = await res.json();
+        const content = document.getElementById('tab-content');
+        if (!tasks.length) {
+            content.innerHTML = '<div class="empty-state"><p>暂无任务，先生成大纲</p></div>';
+            return;
+        }
+        let html = '<div class="task-list">';
+        tasks.forEach(t => {
+            html += `<div class="task-card">
+                <div class="task-header">
+                    <span class="task-title">${t.title_path?.join(' / ') || t.outline_id}</span>
+                    <span class="badge badge-${t.status === 'completed' ? 'success' : 'default'}">${t.status}</span>
+                </div>
+                <p>目标: ${t.target_words}字 | 依据: ${t.required_evidence_types?.join(', ') || '不限'}</p>
+                <details>
+                    <summary>检索问题 (${t.retrieval_queries?.length || 0})</summary>
+                    <ul>${(t.retrieval_queries || []).map(q => `<li>${q}</li>`).join('')}</ul>
+                </details>
+                <button class="btn btn-sm btn-primary" onclick="generateSingleDraft('${t.id}')">生成草稿</button>
+            </div>`;
+        });
+        html += '</div>';
+        content.innerHTML = html;
+    } catch(e) {
+        document.getElementById('tab-content').innerHTML = '<p class="error">加载任务失败</p>';
+    }
+}
+
+async function generateSingleDraft(taskId) {
+    if (!currentProjectId) return;
+    showProgress('章节生成', 0, '开始生成草稿...');
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/tasks/${taskId}/generate-draft`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ skip_llm: true })  // 默认用模拟数据，真实 LLM 需要配置 API Key
+        });
+        if (!res.ok) throw new Error('生成失败');
+        const result = await res.json();
+        hideProgress();
+        showToast(`草稿生成完成: ${result.word_count}字`, 'success');
+        loadDrafts();
+    } catch(e) {
+        hideProgress();
+        showToast('生成失败: ' + e.message, 'error');
+    }
+}
+
+// ── 草稿 ──
+async function loadDrafts() {
+    if (!currentProjectId) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/drafts`);
+        const drafts = await res.json();
+        const content = document.getElementById('tab-content');
+        if (!drafts.length) {
+            content.innerHTML = '<div class="empty-state"><p>暂无草稿，点击任务页面的"生成草稿"开始</p></div>';
+            return;
+        }
+        let html = '<div class="draft-list">';
+        drafts.forEach(d => {
+            html += `<div class="draft-card">
+                <div class="draft-header">
+                    <h3>${d.title || d.outline_id}</h3>
+                    <span class="word-count">${d.content?.length || 0}字</span>
+                </div>
+                <details>
+                    <summary>查看内容</summary>
+                    <div class="draft-content">${d.content || '(空)'}</div>
+                </details>
+            </div>`;
+        });
+        html += '</div>';
+        content.innerHTML = html;
+    } catch(e) {
+        document.getElementById('tab-content').innerHTML = '<p class="error">加载草稿失败</p>';
+    }
+}
+
+async function generateDrafts() {
+    if (!currentProjectId) return;
+    showProgress('批量生成', 0, '开始生成所有章节草稿...');
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ skip_llm: true })
+        });
+        if (!res.ok) throw new Error('生成失败');
+        const result = await res.json();
+        hideProgress();
+        showToast(result.message, 'success');
+        loadDrafts();
+    } catch(e) {
+        hideProgress();
+        showToast('批量生成失败: ' + e.message, 'error');
+    }
+}
+
+// ── 质检 ──
+async function runQualityCheck() {
+    if (!currentProjectId) return;
+    showToast('正在执行质检...');
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/quality-check`, { method: 'POST' });
+        if (!res.ok) throw new Error('质检失败');
+        const result = await res.json();
+        showToast(`质检完成: ${result.errors}个错误, ${result.warnings}个警告`, result.errors > 0 ? 'warning' : 'success');
+        document.querySelector('.tab[data-tab="quality"]').click();
+    } catch(e) {
+        showToast('质检失败: ' + e.message, 'error');
+    }
+}
+
+function loadQualityReport() {
+    if (!currentProjectId) return;
+    fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/quality-check`)
+        .then(r => r.json())
+        .then(result => {
+            const content = document.getElementById('tab-content');
+            if (!result.findings || result.findings.length === 0) {
+                content.innerHTML = '<div class="empty-state"><p>✅ 未发现问题</p></div>';
+                return;
+            }
+            let html = `<div class="quality-summary">
+                <span class="badge badge-error">${result.errors} 错误</span>
+                <span class="badge badge-warning">${result.warnings} 警告</span>
+            </div>
+            <div class="quality-findings">`;
+            result.findings.forEach(f => {
+                html += `<div class="finding finding-${f.severity}">
+                    <span class="finding-code">${f.code}</span>
+                    <span class="finding-location">${f.location}</span>
+                    <p>${f.message}</p>
+                    <p class="suggestion">建议: ${f.suggestion}</p>
+                </div>`;
+            });
+            html += '</div>';
+            content.innerHTML = html;
+        }).catch(e => {
+            document.getElementById('tab-content').innerHTML = '<p class="error">加载质检报告失败</p>';
+        });
+}
+
+// ── 一键执行 ──
+async function runFullPipeline() {
+    if (!currentProjectId) return;
+    showProgress('一键执行', 0, '开始完整流程...');
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/run-full`, { method: 'POST' });
+        if (!res.ok) throw new Error('执行失败');
+        const result = await res.json();
+        updateProgress(100, '完成');
+        hideProgress();
+        showToast(result.message, 'success');
+        loadOutline();
+        loadDrafts();
+    } catch(e) {
+        hideProgress();
+        showToast('执行失败: ' + e.message, 'error');
+    }
+}
+
+// ── 导出 ──
+async function exportMarkdown() {
+    if (!currentProjectId) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/export/markdown`, { method: 'POST' });
+        if (!res.ok) throw new Error('导出失败');
+        const result = await res.json();
+        // 下载文件
+        const blob = new Blob([result.content], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${currentProjectId}_output.md`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('导出成功', 'success');
+    } catch(e) {
+        showToast('导出失败: ' + e.message, 'error');
+    }
 }
 
 // ── 初始化 ──
 document.addEventListener('DOMContentLoaded', () => {
     loadProjects();
+    // 添加导出按钮到 actions-bar
+    const actionsBar = document.querySelector('.actions-bar');
+    if (actionsBar && !actionsBar.querySelector('[onclick*="export"]')) {
+        const exportBtn = document.createElement('button');
+        exportBtn.className = 'btn';
+        exportBtn.textContent = '📥 导出 Markdown';
+        exportBtn.onclick = exportMarkdown;
+        actionsBar.appendChild(exportBtn);
+    }
 });

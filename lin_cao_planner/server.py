@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, HTTPException, UploadFile, File
+    from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import FileResponse
@@ -52,6 +52,37 @@ def get_db() -> Database:
     db = Database(db_path=DB_PATH)
     db.connect()
     return db
+
+
+# ── WebSocket Connection Manager ─────────────────────────
+
+class ConnectionManager:
+    """Manage WebSocket connections per project."""
+
+    def __init__(self):
+        self.active_connections: dict[str, list[WebSocket]] = {}
+
+    async def connect(self, project_id: str, websocket: WebSocket):
+        await websocket.accept()
+        if project_id not in self.active_connections:
+            self.active_connections[project_id] = []
+        self.active_connections[project_id].append(websocket)
+
+    def disconnect(self, project_id: str, websocket: WebSocket):
+        if project_id in self.active_connections:
+            self.active_connections[project_id].remove(websocket)
+            if not self.active_connections[project_id]:
+                del self.active_connections[project_id]
+
+    async def send_message(self, project_id: str, message: dict):
+        if project_id in self.active_connections:
+            for connection in self.active_connections[project_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
+
+ws_manager = ConnectionManager()
 
 
 # ── Request/Response Models ──────────────────────────────
@@ -633,6 +664,26 @@ def run_full_pipeline(project_id: str) -> dict[str, Any]:
         "findings": len(result.findings),
         "output_files": result.output_files,
     }
+
+
+# ── API: WebSocket ──────────────────────────────────────
+
+@app.websocket("/ws/progress/{project_id}")
+async def websocket_progress(websocket: WebSocket, project_id: str):
+    """WebSocket 实时推送任务进度"""
+    await ws_manager.connect(project_id, websocket)
+    try:
+        # 发送连接成功消息
+        await websocket.send_json({"type": "connected", "project_id": project_id})
+        # 保持连接，监听客户端消息（如取消）
+        while True:
+            data = await websocket.receive_text()
+            if data == "disconnect":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ws_manager.disconnect(project_id, websocket)
 
 
 # ── API: Export ─────────────────────────────────────────
