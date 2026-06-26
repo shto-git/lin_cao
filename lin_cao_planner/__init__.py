@@ -14,6 +14,7 @@ from .generator import (
 )
 from .ragflow_client import RagflowClient, RagflowError
 from .pipeline import PipelineConfig, PipelineResult, run_pipeline
+from .database import Database, DB_PATH
 
 __all__ = [
     # Domain
@@ -46,4 +47,7 @@ __all__ = [
     # RAGFlow
     "RagflowClient",
     "RagflowError",
+    # Database
+    "Database",
+    "DB_PATH",
 ]
