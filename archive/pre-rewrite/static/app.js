@@ -510,6 +510,10 @@ document.addEventListener('DOMContentLoaded', () => {
 // ── TinyMCE Rich Text Editor (S4) ──────────────────────
 
 function initTinyMCE() {
+    if (typeof tinymce === 'undefined') {
+        console.warn('TinyMCE 未加载，跳过富文本编辑器初始化');
+        return;
+    }
     document.querySelectorAll('.tinymce-editor').forEach(textarea => {
         if (textarea.dataset.initialized) return;
         textarea.dataset.initialized = 'true';
@@ -534,8 +538,13 @@ async function saveDraft(outlineId) {
     const statusEl = document.getElementById('status-' + outlineId);
     statusEl.textContent = '保存中...';
     
-    const editor = tinymce.get('editor-' + outlineId);
-    const content = editor ? editor.getContent() : document.getElementById('editor-' + outlineId).value;
+    let content = '';
+    try {
+        const editor = tinymce.get('editor-' + outlineId);
+        content = editor ? editor.getContent() : document.getElementById('editor-' + outlineId).value;
+    } catch(e) {
+        content = document.getElementById('editor-' + outlineId).value;
+    }
     
     try {
         const res = await fetch(`${API_BASE}/api/v1/projects/${currentProjectId}/drafts/${outlineId}`, {
