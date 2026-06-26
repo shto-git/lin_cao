@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>林草规划智能编制系统</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="topbar">
+        <div class="logo">🌲 林草规划智能编制</div>
+        <div class="nav-links">
+            <a href="#" class="active" data-page="projects">项目管理</a>
+            <a href="#" data-page="help">帮助</a>
+        </div>
+    </nav>
+
+    <main id="app">
+        <!-- 项目列表页 -->
+        <section id="page-projects" class="page active">
+            <div class="page-header">
+                <h1>项目列表</h1>
+                <button class="btn btn-primary" onclick="showCreateProject()">+ 新建项目</button>
+            </div>
+            <div id="project-list" class="card-grid"></div>
+        </section>
+
+        <!-- 项目详情页 -->
+        <section id="page-project" class="page">
+            <div class="page-header">
+                <button class="btn btn-back" onclick="showPage('projects')">← 返回</button>
+                <h1 id="project-title">项目详情</h1>
+            </div>
+            <div class="actions-bar">
+                <button class="btn btn-primary" onclick="generateOutline()">生成大纲</button>
+                <button class="btn btn-success" onclick="generateDrafts()">生成草稿</button>
+                <button class="btn btn-warning" onclick="runQualityCheck()">质检</button>
+                <button class="btn" onclick="runFullPipeline()">一键执行</button>
+            </div>
+            <div class="tabs">
+                <button class="tab active" data-tab="outline">大纲</button>
+                <button class="tab" data-tab="tasks">任务</button>
+                <button class="tab" data-tab="drafts">草稿</button>
+                <button class="tab" data-tab="quality">质检报告</button>
+            </div>
+            <div id="tab-content" class="tab-content"></div>
+        </section>
+
+        <!-- 帮助页 -->
+        <section id="page-help" class="page">
+            <h1>使用说明</h1>
+            <div class="card">
+                <h3>快速开始</h3>
+                <ol>
+                    <li>点击"新建项目"创建规划项目</li>
+                    <li>填写项目信息（名称、区域、期限、类型、字数）</li>
+                    <li>进入项目后点击"生成大纲"</li>
+                    <li>查看大纲结构，确认无误后点击"生成草稿"</li>
+                    <li>运行质检检查问题</li>
+                    <li>导出成果</li>
+                </ol>
+                <h3>支持的规划类型</h3>
+                <ul>
+                    <li>林业发展规划</li>
+                    <li>湿地保护修复规划</li>
+                    <li>自然保护地建设管理规划</li>
+                    <li>林草产业发展规划</li>
+                    <li>草原保护修复规划</li>
+                </ul>
+            </div>
+        </section>
+    </main>
+
+    <!-- 创建项目弹窗 -->
+    <div id="modal-overlay" class="modal-overlay" onclick="closeModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <h2>新建项目</h2>
+            <form id="create-project-form" onsubmit="createProject(event)">
+                <div class="form-group">
+                    <label>项目名称 *</label>
+                    <input type="text" name="name" required placeholder="如：某县林业发展规划（2026-2030年）">
+                </div>
+                <div class="form-group">
+                    <label>规划区域 *</label>
+                    <input type="text" name="region" required placeholder="如：某县">
+                </div>
+                <div class="form-group">
+                    <label>规划期限 *</label>
+                    <input type="text" name="period" required placeholder="如：2026-2030年">
+                </div>
+                <div class="form-group">
+                    <label>规划类型 *</label>
+                    <select name="planning_type" required>
+                        <option value="林业发展规划">林业发展规划</option>
+                        <option value="湿地保护修复规划">湿地保护修复规划</option>
+                        <option value="自然保护地建设管理规划">自然保护地建设管理规划</option>
+                        <option value="林草产业发展规划">林草产业发展规划</option>
+                        <option value="草原保护修复规划">草原保护修复规划</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>规划层级</label>
+                    <select name="level">
+                        <option value="">请选择</option>
+                        <option value="国家级">国家级</option>
+                        <option value="省级">省级</option>
+                        <option value="市级">市级</option>
+                        <option value="县域级">县域级</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>目标字数</label>
+                    <input type="number" name="target_words" value="50000" min="1000" step="1000">
+                </div>
+                <div class="form-group">
+                    <label>主管部门</label>
+                    <input type="text" name="owner_department" placeholder="如：某县林业局">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn" onclick="closeModal()">取消</button>
+                    <button type="submit" class="btn btn-primary">创建</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -15,39 +15,16 @@ from .generator import (
 from .ragflow_client import RagflowClient, RagflowError
 from .pipeline import PipelineConfig, PipelineResult, run_pipeline
 from .database import Database, DB_PATH
+from .chart_engine import bar_chart, line_chart, pie_chart, stacked_bar_chart
 
 __all__ = [
-    # Domain
-    "ChapterDraft",
-    "Evidence",
-    "OutlineNode",
-    "ProjectInfo",
-    "QualityFinding",
-    "SectionBrief",
-    # Outline & Evidence
-    "build_default_outline",
-    "build_retrieval_plan",
-    # Validation
+    "ChapterDraft", "Evidence", "OutlineNode", "ProjectInfo", "QualityFinding", "SectionBrief",
+    "build_default_outline", "build_retrieval_plan",
     "validate_document",
-    # Rendering
-    "render_outline",
-    "render_retrieval_plan",
-    "render_quality_report",
-    "render_full_document",
-    # Generation
-    "EvidenceChunk",
-    "GenerationResult",
-    "LLMClient",
-    "LLMConfig",
-    "generate_chapter_draft",
-    # Pipeline
-    "PipelineConfig",
-    "PipelineResult",
-    "run_pipeline",
-    # RAGFlow
-    "RagflowClient",
-    "RagflowError",
-    # Database
-    "Database",
-    "DB_PATH",
+    "render_outline", "render_retrieval_plan", "render_quality_report", "render_full_document",
+    "EvidenceChunk", "GenerationResult", "LLMClient", "LLMConfig", "generate_chapter_draft",
+    "PipelineConfig", "PipelineResult", "run_pipeline",
+    "RagflowClient", "RagflowError",
+    "Database", "DB_PATH",
+    "bar_chart", "line_chart", "pie_chart", "stacked_bar_chart",
 ]
