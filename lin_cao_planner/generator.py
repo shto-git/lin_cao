@@ -316,7 +316,7 @@ def _build_simulated_draft(
             lines.append(f"   {chunk.content[:200]}...")
             lines.append("")
     else:
-        lines.append("> **[缺资料提示: 本章节未检索到相关参考资料，请先上传以下类型资料：**
+        lines.append("> **[缺资料提示: 本章节未检索到相关参考资料，请先上传以下类型资料：]**")
         evidence_types_str = "、".join(evidence_types) if evidence_types else "政策文件、统计数据、案例"
         lines.append(f"> **{evidence_types_str}]**")
         lines.append("")
