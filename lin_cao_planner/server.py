@@ -666,6 +666,125 @@ def run_full_pipeline(project_id: str) -> dict[str, Any]:
     }
 
 
+# ── API: Charts (P3-2) ──────────────────────────────────
+
+@app.get("/api/v1/projects/{project_id}/charts")
+def get_charts(project_id: str) -> list[dict[str, Any]]:
+    """自动生成统计图表"""
+    db = get_db()
+    drafts_data = db.list_chapter_drafts(project_id)
+    db.close()
+
+    from lin_cao_planner import ChapterDraft
+    drafts = [
+        ChapterDraft(
+            outline_id=d["outline_id"],
+            title=d.get("title", ""),
+            content=d.get("content", ""),
+            evidence_ids=[],
+            status=d.get("status", "draft"),
+        )
+        for d in drafts_data
+    ]
+
+    from lin_cao_planner.chart_engine import generate_charts_svg
+    charts = generate_charts_svg(drafts)
+    return charts
+
+
+# ── API: Review Comments (P3-3) ─────────────────────────
+
+@app.post("/api/v1/projects/{project_id}/reviews")
+def submit_review(project_id: str, body: dict) -> dict[str, Any]:
+    """提交审查意见"""
+    chapter_id = body.get("chapter_id", "")
+    severity = body.get("severity", "warning")
+    comment_text = body.get("content", "")
+    suggestion = body.get("suggestion", "")
+    reviewer = body.get("reviewer", "")
+
+    if not comment_text:
+        raise HTTPException(status_code=400, detail="请填写审查意见内容")
+
+    import uuid as _uuid
+    review_id = str(_uuid.uuid4())[:8]
+
+    db = get_db()
+    db.save_review(
+        review_id=review_id,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        severity=severity,
+        content=comment_text,
+        suggestion=suggestion,
+        reviewer=reviewer,
+    )
+    db.close()
+    return {"id": review_id, "message": "审查意见已提交"}
+
+
+@app.get("/api/v1/projects/{project_id}/reviews")
+def list_reviews(project_id: str) -> list[dict[str, Any]]:
+    """获取项目所有审查意见"""
+    db = get_db()
+    reviews = db.list_reviews(project_id)
+    db.close()
+    return reviews
+
+
+@app.put("/api/v1/projects/{project_id}/reviews/{review_id}")
+def resolve_review(project_id: str, review_id: str, body: dict) -> dict[str, Any]:
+    """更新审查意见状态"""
+    status = body.get("status", "resolved")
+    if status not in ("open", "in_progress", "resolved", "rejected"):
+        raise HTTPException(status_code=400, detail="无效状态")
+
+    db = get_db()
+    db.update_review_status(review_id, status)
+    db.close()
+    return {"message": f"审查意见已更新为: {status}"}
+
+
+@app.get("/api/v1/projects/{project_id}/reviews/status")
+def review_status(project_id: str) -> dict[str, Any]:
+    """获取审查意见整体状态"""
+    db = get_db()
+    reviews = db.list_reviews(project_id)
+    db.close()
+
+    from lin_cao_planner.review import check_review_resolution
+    review_objs = [
+        ReviewComment(
+            id=r["id"],
+            project_id=r["project_id"],
+            chapter_id=r.get("chapter_id", ""),
+            severity=r.get("severity", "info"),
+            content=r.get("content", ""),
+            suggestion=r.get("suggestion", ""),
+            status=r.get("status", "open"),
+            reviewer=r.get("reviewer", ""),
+        )
+        for r in reviews
+    ]
+    status = check_review_resolution(review_objs)
+    return status
+
+
+# ── API: Cost Stats (P3-4) ──────────────────────────────
+
+@app.get("/api/v1/cost-stats")
+def get_cost_stats() -> dict[str, Any]:
+    """获取 LLM 调用费用统计"""
+    from lin_cao_planner.generator import get_cost_stats
+    stats = get_cost_stats()
+    return {
+        "input_tokens": stats.get("input_tokens", 0),
+        "output_tokens": stats.get("output_tokens", 0),
+        "estimated_usd": round(stats.get("usd", 0), 4),
+        "note": "所有模型均为免费方案，estimated_usd 为参考值",
+    }
+
+
 # ── API: Draft Save (S4) ────────────────────────────────
 
 @app.put("/api/v1/projects/{project_id}/drafts/{outline_id}")

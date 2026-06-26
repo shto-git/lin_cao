@@ -529,3 +529,119 @@ def _build_placeholder_draft(
         lines.append("")
     lines.append("<!-- 请在此处撰写章节正文 -->")
     return "\n".join(lines)
+
+
+
+# ── Multi-Model Router (Phase 3 P3-4) ────────────────────
+
+@dataclass(slots=True)
+class ModelConfig:
+    """Model configuration with pricing."""
+    name: str
+    provider: str  # openai, openrouter, deepseek
+    base_url: str
+    api_key: str
+    input_price_per_1k: float   # $/1K input tokens
+    output_price_per_1k: float  # $/1K output tokens
+    max_tokens: int = 8000
+    is_free: bool = False
+
+    def estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        if self.is_free:
+            return 0.0
+        return (input_tokens / 1000) * self.input_price_per_1k + (output_tokens / 1000) * self.output_price_per_1k
+
+
+# 可用模型列表（按能力从高到低）
+AVAILABLE_MODELS: list[ModelConfig] = [
+    ModelConfig(
+        name="gpt-5.5",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        input_price_per_1k=0.0,
+        output_price_per_1k=0.0,
+        is_free=True,  # 通过 Codex CLI 免费调用
+    ),
+    ModelConfig(
+        name="deepseek-chat",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+        api_key=os.environ.get("LINCAO_LLM_API_KEY", ""),
+        input_price_per_1k=0.001,
+        output_price_per_1k=0.002,
+        is_free=True,
+    ),
+    ModelConfig(
+        name="qwen/qwen3-coder:free",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+        input_price_per_1k=0.0,
+        output_price_per_1k=0.0,
+        is_free=True,
+    ),
+]
+
+
+def select_model(
+    task_type: str = "generation",
+    prefer_free: bool = True,
+) -> tuple[LLMClient | None, ModelConfig | None]:
+    """Select the best available model for the task.
+    
+    Task types:
+        - "outline": 大纲生成（结构化，中等推理）
+        - "generation": 章节起草（需要最强能力）
+        - "expansion": 扩写（需要创造力）
+        - "compression": 压缩（中等推理）
+        - "rewrite": 改写（需要指令遵循）
+        - "review": 质检（需要强推理）
+    Returns: (LLMClient, ModelConfig) or (None, None)
+    """
+    # 按优先级排序：generation 用最强，其他用免费够用
+    generation_priority = ["gpt-5.5", "deepseek-chat", "qwen/qwen3-coder:free"]
+    
+    if task_type == "generation":
+        priority = generation_priority
+    else:
+        # 非核心生成任务：优先免费模型
+        priority = ["deepseek-chat", "qwen/qwen3-coder:free", "gpt-5.5"]
+
+    for model_name in priority:
+        model = next((m for m in AVAILABLE_MODELS if m.name == model_name), None)
+        if model and (model.api_key or model.provider == "openai"):
+            # 创建配置的 LLMClient
+            config = LLMConfig(
+                api_key=model.api_key,
+                base_url=model.base_url,
+                model=model.name,
+                max_tokens=model.max_tokens,
+            )
+            client = LLMClient(config)
+            return client, model
+
+    return None, None
+
+
+# ── Cost Tracker ─────────────────────────────────────────
+
+_cost_stats: dict[str, float] = {"input_tokens": 0, "output_tokens": 0, "usd": 0.0}
+
+
+def track_cost(input_tokens: int, output_tokens: int, model: ModelConfig | None = None) -> None:
+    """Track token usage and cost for monitoring."""
+    _cost_stats["input_tokens"] += input_tokens
+    _cost_stats["output_tokens"] += output_tokens
+    if model:
+        _cost_stats["usd"] += model.estimate_cost(input_tokens, output_tokens)
+
+
+def get_cost_stats() -> dict[str, float]:
+    """Get accumulated cost statistics."""
+    return dict(_cost_stats)
+
+
+def reset_cost_stats() -> None:
+    """Reset cost tracking."""
+    _cost_stats.update({"input_tokens": 0, "output_tokens": 0, "usd": 0.0})

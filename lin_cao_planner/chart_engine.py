@@ -431,3 +431,200 @@ def stacked_bar_chart(
             with open(save_path, "w", encoding="utf-8") as f:
                 f.write(svg)
         return svg
+
+
+
+# ── Chart Data Extraction & Auto-Generation (Phase 3) ─────
+
+import re as _re
+from dataclasses import dataclass
+
+@dataclass
+class ChartData:
+    """Extracted chart specification from text."""
+    chart_type: str  # bar, line, pie
+    title: str
+    labels: list[str]
+    values: list[float]
+    unit: str = ""
+
+# 指标数值提取模式
+VALUE_PATTERN = _re.compile(
+    r'([一-鿿（）]+(?:面积|率|量|值|盖度|占比))'
+    r'[^\d]{0,8}'
+    r'(\d+(?:\.\d+)?)'
+    r'[\s]*(%|公顷|万亩|亿元|万元|平方公里|立方米|个)?',
+    _re.UNICODE
+)
+
+
+def extract_chart_data_from_drafts(drafts: list) -> list[ChartData]:
+    """Scan drafts and extract plottable data for charts."""
+    charts: list[ChartData] = []
+    
+    # Collect metric values across chapters
+    metric_series: dict[str, list[tuple[str, float, str]]] = {}
+    
+    for draft in drafts:
+        draft_content = getattr(draft, "content", "") or draft.get("content", "")
+        if not draft_content:
+            continue
+        draft_title = getattr(draft, "title", "") or draft.get("title", "")
+        
+        for match in VALUE_PATTERN.finditer(draft_content):
+            metric_name = match.group(1).strip()
+            try:
+                value = float(match.group(2))
+            except ValueError:
+                continue
+            unit = match.group(3) or ""
+            
+            if metric_name not in metric_series:
+                metric_series[metric_name] = []
+            metric_series[metric_name].append((draft_title, value, unit))
+    
+    # Generate chart data for metrics with multiple data points or significant values
+    for metric, values in metric_series.items():
+        unit = values[0][2]
+        labels = [v[0] for v in values]
+        nums = [v[1] for v in values]
+        
+        # Decide chart type
+        if len(values) >= 3:
+            # Multiple points → bar chart
+            charts.append(ChartData(
+                chart_type="bar",
+                title=f"{metric}对比",
+                labels=labels,
+                values=nums,
+                unit=unit,
+            ))
+        elif len(values) == 2:
+            # Two values → compare (bar)
+            charts.append(ChartData(
+                chart_type="bar",
+                title=f"{metric}对比",
+                labels=labels,
+                values=nums,
+                unit=unit,
+            ))
+    
+    # Special: look for structural composition data (percentages summing to ~100)
+    composition_pattern = _re.compile(
+        r'([一-鿿]+)[^\d]{0,4}(\d+(?:\.\d+)?)\s*%'
+    )
+    composition_data: dict[str, float] = {}
+    for draft in drafts:
+        draft_content = getattr(draft, "content", "") or draft.get("content", "")
+        for match in composition_pattern.finditer(draft_content):
+            name = match.group(1).strip()
+            try:
+                value = float(match.group(2))
+                if 0 < value < 100 and len(name) >= 2 and len(name) <= 8:
+                    composition_data[name] = value
+            except ValueError:
+                continue
+    
+    if len(composition_data) >= 3:
+        labels = list(composition_data.keys())
+        values = list(composition_data.values())
+        charts.append(ChartData(
+            chart_type="pie",
+            title="构成占比",
+            labels=labels,
+            values=values,
+            unit="%",
+        ))
+    
+    return charts
+
+
+def generate_charts_svg(drafts: list) -> list[dict]:
+    """Generate SVG charts from draft data.
+    
+    Returns list of {title, svg_string, chart_type}.
+    """
+    chart_data = extract_chart_data_from_drafts(drafts)
+    results = []
+    for cd in chart_data:
+        if cd.chart_type == "bar":
+            svg = svg_bar_chart(cd.values, cd.labels, cd.title)
+        elif cd.chart_type == "pie":
+            svg = svg_pie_chart(cd.values, cd.labels, cd.title)
+        else:
+            continue
+        results.append({
+            "title": cd.title,
+            "type": cd.chart_type,
+            "svg": svg,
+            "labels": cd.labels,
+            "values": cd.values,
+            "unit": cd.unit,
+        })
+    return results
+
+
+def svg_pie_chart(
+    data: list[float],
+    labels: list[str],
+    title: str = "",
+    width: int = 500,
+    height: int = 400,
+) -> str:
+    """Generate a pie chart as SVG string."""
+    if not data:
+        return "<svg></svg>"
+    
+    total = sum(data)
+    if total == 0:
+        return "<svg></svg>"
+    
+    cx, cy, r = width // 2, height // 2, min(width, height) // 2 - 40
+    colors = ["#4A90D9", "#67B7DC", "#6EC5AB", "#FBD461", "#F5A623", "#E8734A", "#9B59B6", "#3498DB"]
+    
+    svg_parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">']
+    if title:
+        svg_parts.append(f'<text x="{width//2}" y="30" text-anchor="middle" font-size="16" font-weight="bold">{title}</text>')
+    
+    start_angle = 0
+    for i, (value, label) in enumerate(zip(data, labels)):
+        angle = (value / total) * 360
+        end_angle = start_angle + angle
+        
+        # Calculate arc path
+        start_rad = math.radians(start_angle - 90)
+        end_rad = math.radians(end_angle - 90)
+        x1 = cx + r * math.cos(start_rad)
+        y1 = cy + r * math.sin(start_rad)
+        x2 = cx + r * math.cos(end_rad)
+        y2 = cy + r * math.sin(end_rad)
+        
+        large_arc = 1 if angle > 180 else 0
+        color = colors[i % len(colors)]
+        
+        svg_parts.append(
+            f'<path d="M{cx},{cy} L{x1:.1f},{y1:.1f} A{r},{r} 0 {large_arc},1 {x2:.1f},{y2:.1f} Z" '
+            f'fill="{color}" stroke="white" stroke-width="1"/>'
+        )
+        
+        # Label
+        mid_angle = math.radians(start_angle + angle / 2 - 90)
+        label_r = r * 0.7
+        lx = cx + label_r * math.cos(mid_angle)
+        ly = cy + label_r * math.sin(mid_angle)
+        pct = (value / total) * 100
+        svg_parts.append(
+            f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="middle" font-size="11" fill="white">{pct:.1f}%</text>'
+        )
+        
+        start_angle = end_angle
+    
+    # Legend
+    for i, (label, value) in enumerate(zip(labels, data)):
+        color = colors[i % len(colors)]
+        ly = height - 20 - (len(labels) - 1 - i) * 18
+        svg_parts.append(f'<rect x="10" y="{ly-8}" width="12" height="12" fill="{color}"/>')
+        svg_parts.append(f'<text x="28" y="{ly+2}" font-size="11">{label}: {value}</text>')
+    
+    svg_parts.append('</svg>')
+    return "\n".join(svg_parts)

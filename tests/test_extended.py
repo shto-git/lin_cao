@@ -79,8 +79,8 @@ class GrasslandTemplateTest(unittest.TestCase):
             level="县级", planning_type="草原保护修复规划", target_words=50000,
         )
         outline = build_default_outline(project)
-        # Grassland doesn't have overrides, uses base template (9 chapters)
-        self.assertEqual(len(outline.children), 9)
+        # Grassland has 2 override chapters inserted → 9 base + 2 extra = 11
+        self.assertEqual(len(outline.children), 11)
         total = sum(ch.target_words for ch in outline.children)
         self.assertEqual(total, 50000)
 

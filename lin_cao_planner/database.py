@@ -277,6 +277,41 @@ class Database:
         )
         self._conn.commit()
 
+
+    # ── Reviews ───────────────────────────────────────────
+
+    def save_review(
+        self,
+        review_id: str,
+        project_id: str,
+        chapter_id: str,
+        severity: str = "info",
+        content: str = "",
+        suggestion: str = "",
+        reviewer: str = "",
+    ) -> str:
+        self._execute(
+            """INSERT OR REPLACE INTO reviews
+               (id, project_id, chapter_id, severity, content, suggestion, reviewer, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))""",
+            (review_id, project_id, chapter_id, severity, content, suggestion, reviewer),
+        )
+        self._conn.commit()
+        return review_id
+
+    def list_reviews(self, project_id: str) -> list[dict[str, Any]]:
+        cur = self._execute("SELECT * FROM reviews WHERE project_id = ? ORDER BY created_at DESC", (project_id,))
+        return self._rows_to_list(cur.fetchall())
+
+    def update_review_status(self, review_id: str, status: str) -> None:
+        resolved_at = "datetime('now')" if status == "resolved" else "NULL"
+        self._execute(
+            f"UPDATE reviews SET status = ?, resolved_at = {resolved_at} WHERE id = ?",
+            (status, review_id),
+        )
+        self._conn.commit()
+
+
     def clear_section_tasks(self, project_id: str) -> None:
         cur = self._execute("DELETE FROM section_tasks WHERE project_id = ?", (project_id,))
         self._conn.commit()
@@ -483,6 +518,16 @@ class Database:
         )
         self._conn.commit()
         return did
+
+    def update_chapter_draft(self, draft_id: str, content: str) -> None:
+        word_count = len(content)
+        self._execute(
+            "UPDATE chapter_drafts SET content = ?, word_count = ?, updated_at = datetime('now') WHERE id = ?",
+            (content, word_count, draft_id),
+        )
+        self._conn.commit()
+    
+
 
     def get_chapter_draft(self, draft_id: str) -> dict[str, Any] | None:
         cur = self._execute("SELECT * FROM chapter_drafts WHERE id = ?", (draft_id,))

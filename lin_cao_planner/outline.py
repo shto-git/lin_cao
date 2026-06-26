@@ -29,6 +29,18 @@ TYPE_OVERRIDES: dict[str, list[tuple[str, float, list[str]]]] = {
         ("产业基础与市场分析", 0.14, ["产业现状", "市场需求", "短板分析"]),
         ("产业布局与重点业态", 0.15, ["空间布局", "重点业态", "品牌与加工流通"]),
     ],
+    "草原": [
+        ("草原保护修复格局", 0.14, ["草原生态保护空间", "退化草原修复", "草原生态补水"]),
+        ("草原监测与合理利用", 0.10, ["监测评价", "草畜平衡", "合理利用"]),
+    ],
+    "国土绿化": [
+        ("国土绿化潜力评估", 0.15, ["绿化现状分析", "绿化潜力评价", "绿化空间布局"]),
+        ("国土绿化重点任务", 0.13, ["森林质量提升", "退化林修复", "乡村绿化美化"]),
+    ],
+    "生物多样性": [
+        ("生物多样性保护体系", 0.14, ["保护优先区", "保护空缺分析", "保护网络构建"]),
+        ("重点物种与生态系统保护", 0.13, ["珍稀濒危物种", "典型生态系统", "外来物种防控"]),
+    ],
 }
 
 
@@ -95,14 +107,20 @@ def _distribute_words(total_words: int, weights: list[float]) -> list[int]:
 
 def _required_evidence_types(title: str) -> list[str]:
     evidence: list[str] = []
-    if any(key in title for key in ["依据", "政策", "保障", "管控"]):
+    if any(key in title for key in ["依据", "政策", "保障", "管控", "法规"]):
         evidence.extend(["policy", "standard"])
-    if any(key in title for key in ["现状", "指标", "估算", "资源", "效益"]):
+    if any(key in title for key in ["现状", "指标", "估算", "资源", "效益", "盖度"]):
         evidence.extend(["project_data", "statistic"])
-    if any(key in title for key in ["工程", "项目", "年度"]):
+    if any(key in title for key in ["工程", "项目", "年度", "任务"]):
         evidence.extend(["project_data", "case"])
-    if any(key in title for key in ["空间", "布局", "分区", "区域"]):
+    if any(key in title for key in ["空间", "布局", "分区", "区域", "保护地"]):
         evidence.extend(["spatial_data", "policy"])
+    if any(key in title for key in ["物种", "生态", "生物多样性", "植被"]):
+        evidence.extend(["case", "statistic"])
+    if any(key in title for key in ["市场", "产业", "品牌", "加工"]):
+        evidence.extend(["project_data", "case"])
+    if any(key in title for key in ["监测", "科普", "宣教", "社区"]):
+        evidence.extend(["standard", "case"])
     if not evidence:
         evidence.append("case")
     return sorted(set(evidence))
