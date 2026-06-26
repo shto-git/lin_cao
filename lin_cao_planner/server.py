@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -443,6 +444,94 @@ def get_draft(project_id: str, outline_id: str) -> dict[str, str]:
     raise HTTPException(status_code=404, detail="草稿不存在")
 
 
+@app.post("/api/v1/projects/{project_id}/tasks/{task_id}/generate-draft")
+def generate_single_draft(project_id: str, task_id: str, skip_llm: bool = False) -> dict[str, Any]:
+    """为单个章节任务生成草稿"""
+    db = get_db()
+    task = db.get_section_task(task_id)
+    if not task or task.get("project_id") != project_id:
+        db.close()
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    from lin_cao_planner import ChapterDraft
+    from lin_cao_planner.generator import generate_chapter_draft, EvidenceChunk, LLMConfig, LLMClient
+    from lin_cao_planner.domain import SectionBrief
+
+    # 构建 SectionBrief
+    brief = SectionBrief(
+        outline_id=task["outline_id"],
+        title_path=json.loads(task.get("title_path", "[]")) if isinstance(task.get("title_path"), str) else task.get("title_path", []),
+        target_words=task.get("target_words", 3000),
+        retrieval_queries=json.loads(task.get("retrieval_queries", "[]")) if isinstance(task.get("retrieval_queries"), str) else task.get("retrieval_queries", []),
+        required_evidence_types=json.loads(task.get("required_evidence_types", "[]")) if isinstance(task.get("required_evidence_types"), str) else task.get("required_evidence_types", []),
+        writing_constraints=json.loads(task.get("writing_constraints", "[]")) if isinstance(task.get("writing_constraints"), str) else task.get("writing_constraints", []),
+    )
+
+    # 获取证据（如果有 RAGFlow）
+    evidence_chunks: list[EvidenceChunk] = []
+    project_data = db.get_project(project_id)
+    ragflow_dataset_id = project_data.get("ragflow_dataset_id") if project_data else None
+    
+    if ragflow_dataset_id and brief.retrieval_queries:
+        try:
+            from lin_cao_planner.ragflow_client import RagflowClient
+            llm_config = LLMConfig.from_env()
+            rag_client = RagflowClient(
+                base_url=llm_config.ragflow_base_url or "http://localhost:9380",
+                api_key=llm_config.ragflow_api_key or "",
+            )
+            # 用第一条检索问题检索
+            chunks = rag_client.retrieve_chunks(
+                dataset_id=ragflow_dataset_id,
+                question=brief.retrieval_queries[0],
+                page_size=5,
+            )
+            for i, chunk in enumerate(chunks):
+                evidence_chunks.append(EvidenceChunk(
+                    content=chunk.get("content", ""),
+                    document_name=chunk.get("document_name", "未知"),
+                    similarity=chunk.get("similarity", 0.0),
+                ))
+        except Exception:
+            pass  # RAGFlow 检索失败不影响
+
+    # 生成草稿
+    llm_config = LLMConfig.from_env()
+    llm_client = LLMClient(llm_config) if llm_config.api_key else None
+
+    result = generate_chapter_draft(
+        outline_id=brief.outline_id,
+        title_path=" / ".join(brief.title_path),
+        target_words=brief.target_words,
+        requirements=brief.writing_constraints[:3] if brief.writing_constraints else [],
+        evidence_types=brief.required_evidence_types,
+        constraints=brief.writing_constraints,
+        evidence_chunks=evidence_chunks,
+        llm_client=llm_client,
+    )
+
+    # 保存草稿
+    db.save_chapter_draft(
+        project_id=project_id,
+        outline_id=result.outline_id,
+        title=result.title,
+        content=result.content,
+        evidence_ids=result.evidence_ids,
+        status=result.status,
+    )
+
+    db.close()
+    return {
+        "id": result.outline_id,
+        "title": result.title,
+        "content": result.content,
+        "word_count": result.word_count,
+        "evidence_ids": result.evidence_ids,
+        "status": result.status,
+        "warnings": result.warnings,
+    }
+
+
 # ── API: Quality Check ──────────────────────────────────
 
 @app.post("/api/v1/projects/{project_id}/quality-check")
@@ -543,6 +632,53 @@ def run_full_pipeline(project_id: str) -> dict[str, Any]:
         "drafts": len(result.drafts),
         "findings": len(result.findings),
         "output_files": result.output_files,
+    }
+
+
+# ── API: Export ─────────────────────────────────────────
+
+@app.post("/api/v1/projects/{project_id}/export/markdown")
+def export_markdown(project_id: str) -> dict[str, Any]:
+    """导出完整规划文本为 Markdown"""
+    db = get_db()
+    project_data = db.get_project(project_id)
+    if not project_data:
+        db.close()
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = ProjectInfo(
+        name=project_data["name"],
+        region=project_data["region"],
+        period=project_data["period"],
+        level=project_data.get("level", ""),
+        planning_type=project_data["planning_type"],
+        target_words=project_data.get("target_words", 50000),
+    )
+
+    outline = build_default_outline(project)
+    drafts_data = db.list_chapter_drafts(project_id)
+    findings_data = []  # Optional: run quality check first
+
+    from lin_cao_planner import ChapterDraft
+    drafts = [
+        ChapterDraft(
+            outline_id=d["outline_id"],
+            title=d.get("title", ""),
+            content=d.get("content", ""),
+            evidence_ids=[],
+            status=d.get("status", "draft"),
+        )
+        for d in drafts_data
+    ]
+
+    from lin_cao_planner.renderer import render_full_document
+    markdown_content = render_full_document(outline, drafts, findings_data if findings_data else None)
+
+    db.close()
+    return {
+        "content": markdown_content,
+        "file_path": f"dist/{project_id}/output.md",
+        "word_count": len(markdown_content),
     }
 
 

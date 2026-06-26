@@ -29,6 +29,8 @@ def validate_document(outline: OutlineNode, drafts: list[ChapterDraft]) -> list[
     findings.extend(_validate_forbidden_phrases(drafts))
     findings.extend(_validate_evidence_required(drafts))
     findings.extend(_validate_metric_consistency(drafts))
+    findings.extend(_validate_word_count(outline, drafts))
+    findings.extend(_validate_figure_references(drafts))
     return findings
 
 
@@ -105,4 +107,65 @@ def _validate_metric_consistency(drafts: list[ChapterDraft]) -> list[QualityFind
                     suggestion="确认是否为不同年份或不同范围；若不是，应统一指标口径。",
                 )
             )
+    return findings
+
+
+
+def _validate_word_count(outline: OutlineNode, drafts: list[ChapterDraft]) -> list[QualityFinding]:
+    """Check if chapter word count deviates more than 30% from target."""
+    findings: list[QualityFinding] = []
+    # Build a map of outline_id -> target_words
+    target_map: dict[str, int] = {}
+    for leaf in outline.leaves():
+        target_map[leaf.id] = leaf.target_words
+
+    for draft in drafts:
+        target = target_map.get(draft.outline_id, 0)
+        if target <= 0:
+            continue
+        actual = len(draft.content)
+        ratio = actual / target if target > 0 else 0
+        if ratio < 0.7:
+            findings.append(
+                QualityFinding(
+                    severity="warning",
+                    code="word_count_low",
+                    message=f"「{draft.title}」字数 {actual}，低于目标 {target} 的 70%",
+                    location=draft.outline_id,
+                    suggestion=f"建议扩写至 {int(target * 0.7)} 字以上，或调整字数分配。",
+                )
+            )
+        elif ratio > 1.3:
+            findings.append(
+                QualityFinding(
+                    severity="warning",
+                    code="word_count_high",
+                    message=f"「{draft.title}」字数 {actual}，超过目标 {target} 的 130%",
+                    location=draft.outline_id,
+                    suggestion=f"建议压缩至 {int(target * 1.3)} 字以内，或调整字数分配。",
+                )
+            )
+    return findings
+
+
+def _validate_figure_references(drafts: list[ChapterDraft]) -> list[QualityFinding]:
+    """Check if chapters mention figures/tables but lack references."""
+    findings: list[QualityFinding] = []
+    figure_keywords = ["图", "表", "图表", "示意图", "统计表"]
+    for draft in drafts:
+        for kw in figure_keywords:
+            if kw in draft.content:
+                # Check if there's a proper figure reference like "图1-1" or "表3-2"
+                ref_pattern = re.compile(rf"{kw}\s*\d+[-─‑]\d+")
+                if not ref_pattern.search(draft.content):
+                    findings.append(
+                        QualityFinding(
+                            severity="info",
+                            code="missing_figure_ref",
+                            message=f"「{draft.title}」提到「{kw}」但缺少规范编号（如{kw}1-1）",
+                            location=draft.outline_id,
+                            suggestion=f"请为{kw}添加规范编号，格式：{kw}X-Y（章节-序号）",
+                        )
+                    )
+                    break  # One finding per chapter for this check
     return findings

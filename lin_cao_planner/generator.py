@@ -252,6 +252,85 @@ def generate_chapter_draft(
     )
 
 
+def generate_draft_skip_llm(
+    outline_id: str,
+    title_path: str,
+    target_words: int,
+    requirements: list[str],
+    evidence_types: list[str],
+    constraints: list[str],
+    evidence_chunks: list[EvidenceChunk],
+    skip_llm: bool = False,
+) -> GenerationResult:
+    """Generate a chapter draft, with option to skip LLM for testing."""
+    warnings: list[str] = []
+
+    if skip_llm:
+        warnings.append("LLM 已跳过（skip_llm=true），返回模拟草稿")
+        # 生成模拟草稿：基于大纲信息生成模板内容
+        simulated = _build_simulated_draft(title_path, target_words, requirements, evidence_types, evidence_chunks)
+        word_count = len(simulated)
+        evidence_ids = [f"{chunk.document_name}_{i}" for i, chunk in enumerate(evidence_chunks)]
+        return GenerationResult(
+            outline_id=outline_id,
+            title=title_path,
+            content=simulated,
+            evidence_ids=evidence_ids,
+            word_count=word_count,
+            status="draft",
+            warnings=warnings,
+        )
+
+    # 正常 LLM 调用
+    return generate_chapter_draft(
+        outline_id=outline_id,
+        title_path=title_path,
+        target_words=target_words,
+        requirements=requirements,
+        evidence_types=evidence_types,
+        constraints=constraints,
+        evidence_chunks=evidence_chunks,
+    )
+
+
+def _build_simulated_draft(
+    title_path: str,
+    target_words: int,
+    requirements: list[str],
+    evidence_types: list[str],
+    evidence_chunks: list[EvidenceChunk],
+) -> str:
+    """Build a simulated draft for testing without LLM."""
+    lines = [
+        f"<!-- 模拟草稿（skip_llm=true）: {title_path} -->",
+        "",
+        f"<!-- 目标字数: {target_words} 字 -->",
+        "",
+    ]
+
+    if evidence_chunks:
+        lines.append("## 参考资料摘要")
+        lines.append("")
+        for i, chunk in enumerate(evidence_chunks, 1):
+            lines.append(f"{i}. **[来源: {chunk.document_name}]**")
+            lines.append(f"   {chunk.content[:200]}...")
+            lines.append("")
+    else:
+        lines.append("> **[缺资料提示: 本章节未检索到相关参考资料，请先上传以下类型资料：**
+        evidence_types_str = "、".join(evidence_types) if evidence_types else "政策文件、统计数据、案例"
+        lines.append(f"> **{evidence_types_str}]**")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append(f"<!-- 此处将生成约 {target_words} 字的正文内容 -->")
+    lines.append(f"<!-- 写作要求：-->")
+    for req in requirements:
+        lines.append(f"<!-- - {req} -->")
+
+    return "\n".join(lines)
+
+
 def _build_placeholder_draft(
     title_path: str,
     evidence_chunks: list[EvidenceChunk],
